@@ -1,0 +1,96 @@
+#!/bin/bash
+
+
+# 1. Set Project configuration :
+#-----------------------------------------------------------------------------------------------
+PROJECT_NAME="Nom du projet"
+CV_FOLDER="dossier-apprenant"
+
+INDEX_FILE="index.html"
+DATE_PLACEHOLDER="\[UPDATED_DATE\]"
+DATE=$(date +%d-%m-%Y)
+
+ROOT="/path/to/production-root-folder"
+WWW_PATH="${ROOT}/cv/${CV_FOLDER}"
+GIT_PATH="${ROOT}/git/${CV_FOLDER}/deploy.git"
+BACKUP_PATH="${ROOT}/backups/${CV_FOLDER}"
+LOG_PATH="${ROOT}/logs/${CV_FOLDER}"
+LOG_FILE="${LOG_PATH}/${DATE}-post-receive.log"
+ENV="production"
+ENV_URL="URL-PRODUCTION/${CV_FOLDER}"
+
+# Slack
+SLACK_CHANNEL="SLACK-CHANNEL-NAME"
+SLACK_HOOK="SLACK-HOOK-URL"
+
+
+echo -e "\e[32mStarting Deploy \"${PROJECT}\" ...\e[0m"
+
+
+# 1. Create log
+#-----------------------------------------------------------------------------------------------
+mkdir -p $LOG_PATH
+touch $LOG_FILE
+echo "################# New Deploy #################" >> $LOG_FILE
+echo -e "[log] Received push request at $( date '+%Y-%m-%d %H:%M:%S' )" >> $LOG_FILE
+echo "[log] Starting Deploy..." >> $LOG_FILE
+
+
+# 2. Create backup
+#-----------------------------------------------------------------------------------------------
+if [ -d "$BACKUP_PATH" ]; then rm -Rf $BACKUP_PATH; fi # Delete last one
+mkdir -p $BACKUP_PATH
+cp -r $WWW_PATH/* $BACKUP_PATH/
+echo "> Backup created"
+echo "[log] Backup created in ${BACKUP_PATH}" >> $LOG_FILE
+
+
+# 3. Code update
+#-----------------------------------------------------------------------------------------------
+while read oldrev newrev ref
+do
+    BRANCH=`echo $ref | cut -d/ -f3`
+    git --work-tree=${WWW_PATH} --git-dir=${GIT_PATH} checkout -f $BRANCH > /dev/null 2>&1
+done
+
+echo "> Code updated with branch ${BRANCH}"
+echo "[log] Code updated with branch ${BRANCH}" >> $LOG_FILE
+
+
+# 4. Testing (only checking URL response status)
+#-----------------------------------------------------------------------------------------------
+STATUS=$(curl -o /dev/null --silent --head --write-out '%{http_code}\n' $ENV_URL/$INDEX_FILE)
+echo "> Running test"
+if [ $STATUS -ne "200" ]; then
+  echo -e "> Test \e[32mfailed\e[0m"
+  echo "[log] Test failed" >> $LOG_FILE
+
+  # Rollback
+  rm -Rf $WWW_PATH/*
+  cp -r $BACKUP_PATH/* $WWW_PATH/
+
+  echo "> Backup restored"
+  echo "[log] Backup restored" >> $LOG_FILE
+  echo -e "\e[31mDeploy failed!\e[0m"
+  echo "[log] Deploy failed" >> $LOG_FILE
+
+  # Send slack (Error)
+  curl -X POST --data-urlencode 'payload={"channel": "#'$SLACK_CHANNEL'", "username": "monkey-bot", "text": "CV Project: New deploy on '$ENV'.", "icon_emoji": ":monkey_face:", "attachments":[{"color":"#D00000","fields":[{"title":"Notes","value":"Deploy status: failed \n Environment: '$ENV' \n URL: <'$ENV_URL'>","short":false}]}]}' $SLACK_HOOK > /dev/null 2>&1
+
+  exit;
+fi
+echo -e "> Test \e[32mok\e[0m"
+  echo "[log] Test passed" >> $LOG_FILE
+
+
+# 5. Set udated date in index.html
+#-----------------------------------------------------------------------------------------------
+sed -i "s/${DATE_PLACEHOLDER}/$( date '+%d\/%m\/%Y à %H:%M:%S' )/g" $WWW_PATH/$INDEX_FILE
+
+
+# Send Slack message (OK)
+curl -X POST --data-urlencode 'payload={"channel": "#'$SLACK_CHANNEL'", "username": "monkey-bot", "text": "CV Project: New deploy on '$ENV'.", "icon_emoji": ":monkey_face:", "attachments":[{"color":"#088A08","fields":[{"title":"Notes","value":"Deploy status: OK \n Environment: '$ENV' \n URL: <'$ENV_URL'>","short":false}]}]}' $SLACK_HOOK > /dev/null 2>&1
+
+
+echo "[log] Deploy finished" >> $LOG_FILE
+echo -e "\e[32mDeploy finished!\e[0m"
